@@ -61,3 +61,91 @@
 # {'type': 'metrics', 'dataset': 'train', 'r2': 0.8, 'mse': 0.7, 'mad': 0.9}
 # {'type': 'metrics', 'dataset': 'test', 'r2': 0.7, 'mse': 0.6, 'mad': 0.8}
 #
+
+import gzip
+import json
+import pandas as pd
+from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
+from sklearn.feature_selection import SelectKBest, f_regression
+from sklearn.linear_model import LinearRegression
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+import pickle
+
+# Paso 1
+def cargar_preprocesar(path):
+  df = pd.read_csv(path, compression="zip")
+  df["Age"] = 2021 - df["Year"]
+  df = df.drop(["Year", "Car_Name"], axis=1)
+  return df
+
+train = cargar_preprocesar("files/input/train_data.csv.zip")
+test = cargar_preprocesar("files/input/test_data.csv.zip")
+
+# Paso 2
+x_train = train.drop("Present_Price", axis=1)
+y_train = train["Present_Price"]
+x_test = test.drop("Present_Price", axis=1)
+y_test = test["Present_Price"]
+
+cat_cols = ['Fuel_Type','Selling_type','Transmission']
+num_cols = [c for c in x_train.columns if c not in cat_cols]
+
+# Paso 3
+pre = ColumnTransformer([
+  ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
+  ("num", MinMaxScaler(), num_cols)
+])
+
+pipe = Pipeline([
+  ("pre", pre),
+  ("sel", SelectKBest(f_regression)),
+  ("model", LinearRegression())
+])
+
+# Paso 4
+params = {
+  "sel__k": [5,10,15,20],
+  "model__fit_intercept":[True,False]
+}
+
+
+grid = GridSearchCV(
+  pipe,
+  params,
+  scoring="neg_mean_absolute_error",
+  cv=10,
+  n_jobs=-1
+)
+
+grid.fit(x_train, y_train)
+
+best_model = grid.best_estimator_
+
+# Paso 5
+with gzip.open("files/models/model.pkl.gz", "wb") as f:
+  pickle.dump(best_model, f)
+
+# Paso 6
+def build_metrics(name, y_true, y_pred):
+  return {
+    "type": "metrics",
+    "dataset": name,
+    "r2": float(round(r2_score(y_true, y_pred), 4)),
+    "mse": float(round(mean_squared_error(y_true, y_pred), 4)),
+    "mad": float(round(mean_absolute_error(y_true, y_pred), 4))
+  }
+
+pred_train = best_model.predict(x_train)
+pred_test = best_model.predict(x_test)
+
+metrics = [
+  build_metrics("train", y_train, pred_train),
+  build_metrics("test", y_test, pred_test)
+]
+
+with open("files/output/metrics.json", "w") as f:
+  for m in metrics:
+    f.write(json.dumps(m) + "\n")
